@@ -182,3 +182,44 @@ def test_recognition_history_flow(client: TestClient, sample_jpeg_bytes: bytes) 
     client.delete("/api/v1/vision/history")
     hist_resp3 = client.get("/api/v1/vision/history")
     assert hist_resp3.json()["total"] == 0
+
+
+def test_recognize_with_onnx_classifier(sample_jpeg_bytes: bytes) -> None:
+    """POST /api/v1/vision/recognize uses ONNX classifier when mock mode is disabled."""
+    from unittest.mock import MagicMock
+    from app.api.deps import get_landmark_recognition_service
+    from app.services.landmark_service import LandmarkRecognitionService
+
+    settings = Settings(vision_mock_enabled=False, onnx_enabled=True)
+    mock_onnx = MagicMock()
+    mock_onnx.is_available = True
+    mock_onnx.classify_image.return_value = {
+        "class_code": "cau_vang",
+        "landmark_name": "Cầu Vàng (Bà Nà Hills)",
+        "confidence": 0.98,
+        "latitude": 15.9950,
+        "longitude": 107.9965,
+        "description": "Kỳ quan kiến trúc cầu bàn tay khổng lồ vươn giữa mây trời tại Bà Nà Hills.",
+        "matched_keywords": ["cầu vàng", "golden bridge", "bà nà hills"],
+        "meets_threshold": True,
+    }
+
+    service = LandmarkRecognitionService(settings=settings, onnx_classifier=mock_onnx)
+    app = create_app()
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_landmark_recognition_service] = lambda: service
+
+    with TestClient(app) as test_client:
+        files = {"image": ("cau_vang.jpg", io.BytesIO(sample_jpeg_bytes), "image/jpeg")}
+        response = test_client.post("/api/v1/vision/recognize", files=files)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert data["landmark_name"] == "Cầu Vàng (Bà Nà Hills)"
+        assert data["confidence"] == 0.98
+        assert data["latitude"] == 15.9950
+        assert data["longitude"] == 107.9965
+        assert data["detection_type"] == "LOCAL_ONNX_CLASSIFIER"
+        assert "golden bridge" in data["matched_keywords"]
+

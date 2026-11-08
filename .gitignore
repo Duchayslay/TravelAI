@@ -88,6 +88,13 @@ wheels/
 .pytest_cache/
 .coverage
 htmlcov/
+*.pth
+*.pt
+/landmark_classifier.onnx
+dataset_landmarks/
+temp_danang_downloads/
+.gradio/
+
 
 # Java / Spring Boot
 target/

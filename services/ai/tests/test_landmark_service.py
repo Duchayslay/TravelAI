@@ -207,3 +207,85 @@ async def test_history_rotation_and_clear(dummy_preprocessed: PreprocessedImage)
 
     service.clear_history()
     assert len(service.get_history()) == 0
+
+
+@pytest.mark.asyncio
+async def test_onnx_landmark_recognition_success(dummy_preprocessed: PreprocessedImage) -> None:
+    """When ONNX is enabled and meets threshold, returns local classification result."""
+    settings = Settings(vision_mock_enabled=False, onnx_enabled=True)
+
+    mock_onnx = MagicMock()
+    mock_onnx.is_available = True
+    mock_onnx.classify_image.return_value = {
+        "class_code": "cau_rong",
+        "landmark_name": "Cầu Rồng",
+        "confidence": 0.96,
+        "latitude": 16.0611,
+        "longitude": 108.2274,
+        "description": "Cây cầu hình rồng bắc qua sông Hàn tại Đà Nẵng.",
+        "matched_keywords": ["cầu rồng", "đà nẵng"],
+        "meets_threshold": True,
+    }
+
+    service = LandmarkRecognitionService(settings=settings, onnx_classifier=mock_onnx)
+    result = await service.recognize(dummy_preprocessed)
+
+    assert result.success is True
+    assert result.landmark_name == "Cầu Rồng"
+    assert result.confidence == 0.96
+    assert result.latitude == 16.0611
+    assert result.longitude == 108.2274
+    assert result.detection_type == "LOCAL_ONNX_CLASSIFIER"
+    assert "đà nẵng" in result.matched_keywords
+
+
+@pytest.mark.asyncio
+async def test_onnx_below_threshold_fallback_to_vision(
+    dummy_preprocessed: PreprocessedImage,
+) -> None:
+    """When ONNX confidence is below threshold, falls back to GCP Vision."""
+    settings = Settings(
+        vision_mock_enabled=False,
+        onnx_enabled=True,
+        google_application_credentials="/fake/path.json",
+    )
+
+    mock_onnx = MagicMock()
+    mock_onnx.is_available = True
+    mock_onnx.classify_image.return_value = {
+        "class_code": "unknown",
+        "landmark_name": "Unknown",
+        "confidence": 0.20,
+        "latitude": None,
+        "longitude": None,
+        "description": "Unknown",
+        "matched_keywords": [],
+        "meets_threshold": False,
+    }
+
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_response.error.code = 0
+    mock_landmark = MagicMock()
+    mock_landmark.description = "Hồ Ba Bể"
+    mock_landmark.score = 0.88
+    mock_loc = MagicMock()
+    mock_loc.lat_lng.latitude = 22.4083
+    mock_loc.lat_lng.longitude = 105.6167
+    mock_landmark.locations = [mock_loc]
+    mock_landmark.bounding_poly.vertices = []
+    mock_response.landmark_annotations = [mock_landmark]
+    mock_client.landmark_detection.return_value = mock_response
+
+    service = LandmarkRecognitionService(
+        settings=settings,
+        vision_client=mock_client,
+        onnx_classifier=mock_onnx,
+    )
+    result = await service.recognize(dummy_preprocessed)
+
+    assert result.success is True
+    assert result.landmark_name == "Hồ Ba Bể"
+    assert result.confidence == 0.88
+    assert result.detection_type == "LANDMARK_DETECTION"
+

@@ -18,6 +18,7 @@ from app.schemas.vision import (
     LandmarkRecognitionResult,
     RecognitionHistoryEntry,
 )
+from app.services.onnx_classifier import OnnxLandmarkClassifier
 from app.services.preprocessor import PreprocessedImage
 
 logger = logging.getLogger("travelai.ai.landmark")
@@ -40,18 +41,29 @@ MOCK_LANDMARK_DATA = {
 
 
 class LandmarkRecognitionService:
-    """Service orchestrating landmark detection via GCP Cloud Vision or deterministic mock."""
+    """Service orchestrating landmark detection via local ONNX classifier, GCP Cloud Vision, or deterministic mock."""
 
     def __init__(
         self,
         settings: Settings | None = None,
         vision_client: vision.ImageAnnotatorClient | None = None,
+        onnx_classifier: OnnxLandmarkClassifier | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self._vision_client = vision_client
         self._history: deque[RecognitionHistoryEntry] = deque(
             maxlen=self.settings.vision_max_history_entries
         )
+        self._onnx_classifier = onnx_classifier
+        if self._onnx_classifier is None and self.settings.onnx_enabled:
+            try:
+                self._onnx_classifier = OnnxLandmarkClassifier(
+                    model_path=self.settings.onnx_model_path,
+                    classes_path=self.settings.onnx_classes_path,
+                    confidence_threshold=self.settings.onnx_confidence_threshold,
+                )
+            except Exception as exc:
+                logger.warning("Failed to initialize ONNX landmark classifier: %s", str(exc))
 
     def _get_client(self) -> vision.ImageAnnotatorClient:
         """Lazily initialize and return the Google Cloud Vision client."""
@@ -85,9 +97,7 @@ class LandmarkRecognitionService:
         start_time = time.perf_counter()
         req_id = str(uuid.uuid4())
 
-        if self.settings.vision_mock_enabled or (
-            not self.settings.google_application_credentials and self.settings.vision_mock_enabled
-        ):
+        if self.settings.vision_mock_enabled:
             logger.info("Serving landmark recognition via deterministic mock mode.")
             result = LandmarkRecognitionResult(
                 landmark_name=MOCK_LANDMARK_DATA["landmark_name"],
@@ -101,6 +111,57 @@ class LandmarkRecognitionService:
                 matched_keywords=MOCK_LANDMARK_DATA["matched_keywords"],
                 detection_type="LANDMARK_DETECTION",
             )
+        elif (
+            self.settings.onnx_enabled
+            and self._onnx_classifier is not None
+            and self._onnx_classifier.is_available
+        ):
+            # Step 1: Run local ONNX landmark classifier
+            onnx_result = await asyncio.to_thread(
+                self._onnx_classifier.classify_image, preprocessed.pil_image
+            )
+            if onnx_result and onnx_result.get("meets_threshold"):
+                logger.info(
+                    "ONNX classification successful: '%s' (conf=%.2f >= threshold=%.2f)",
+                    onnx_result["landmark_name"],
+                    onnx_result["confidence"],
+                    self.settings.onnx_confidence_threshold,
+                )
+                result = LandmarkRecognitionResult(
+                    landmark_name=onnx_result["landmark_name"],
+                    confidence=onnx_result["confidence"],
+                    latitude=onnx_result.get("latitude"),
+                    longitude=onnx_result.get("longitude"),
+                    bounding_poly=[],
+                    metadata=preprocessed.metadata,
+                    success=True,
+                    description=onnx_result.get("description"),
+                    matched_keywords=onnx_result.get("matched_keywords", []),
+                    detection_type="LOCAL_ONNX_CLASSIFIER",
+                )
+            elif self.settings.google_application_credentials:
+                # Step 2: Fallback to GCP Vision if credentials exist
+                logger.info(
+                    "ONNX confidence (%.2f) below threshold. Falling back to GCP Vision.",
+                    onnx_result.get("confidence", 0.0) if onnx_result else 0.0,
+                )
+                result = await self._recognize_with_vision(preprocessed)
+            elif onnx_result and onnx_result.get("confidence", 0.0) >= 0.30:
+                logger.info("No GCP credentials configured; returning candidate ONNX prediction.")
+                result = LandmarkRecognitionResult(
+                    landmark_name=onnx_result["landmark_name"],
+                    confidence=onnx_result["confidence"],
+                    latitude=onnx_result.get("latitude"),
+                    longitude=onnx_result.get("longitude"),
+                    bounding_poly=[],
+                    metadata=preprocessed.metadata,
+                    success=True,
+                    description=onnx_result.get("description"),
+                    matched_keywords=onnx_result.get("matched_keywords", []),
+                    detection_type="LOCAL_ONNX_CLASSIFIER",
+                )
+            else:
+                result = await self._recognize_with_vision(preprocessed)
         else:
             result = await self._recognize_with_vision(preprocessed)
 

@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     vision_timeout_seconds: float = 5.0
     vision_max_history_entries: int = 100
 
+    # Local ONNX Classifier Settings
+    onnx_enabled: bool = True
+    onnx_model_path: str = "app/models/landmark_classifier.onnx"
+    onnx_classes_path: str = "app/models/classes.json"
+    onnx_confidence_threshold: float = 0.40
+
     # CORS
     cors_origins: list[str] = ["*"]
 

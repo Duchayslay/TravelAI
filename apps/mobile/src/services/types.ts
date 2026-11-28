@@ -323,12 +323,31 @@ export interface VipDealsResponse {
   waiveFirstRescheduleFee: boolean;
   deals: VipDealItem[];
 }
+export type VipTimelineCategory =
+  | "WAKE"
+  | "TRANSIT"
+  | "FOOD"
+  | "STAY"
+  | "SIGHT"
+  | "TOUR"
+  | "NIGHT";
+
+export interface VipTimelineStop {
+  time: string;
+  category: VipTimelineCategory;
+  title: string;
+  subtitle: string;
+  placeLabel?: string | null;
+}
+
 export interface VipItineraryDay {
   day: number;
+  dateLabel?: string;
   title: string;
   morning: string;
   afternoon: string;
   evening: string;
+  timeline?: VipTimelineStop[];
 }
 export interface VipItineraryResponse {
   tier: string;
@@ -337,6 +356,7 @@ export interface VipItineraryResponse {
   province: string;
   style: string;
   styleLabel: string;
+  aiSource?: string;
   days: VipItineraryDay[];
   estimatedOriginalVnd: number;
   estimatedMemberVnd: number;

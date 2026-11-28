@@ -165,6 +165,39 @@ export function wcagContrastRatio(foregroundHex: string, backgroundHex: string):
   return Math.round(((lighter + 0.05) / (darker + 0.05)) * 100) / 100;
 }
 
+export interface TimelineCategoryStyle {
+  icon:
+    | "sunny-outline"
+    | "airplane-outline"
+    | "restaurant-outline"
+    | "bed-outline"
+    | "compass-outline"
+    | "map-outline"
+    | "camera-outline";
+  bg: string;
+  fg: string;
+}
+
+export function timelineCategoryVisual(category?: string | null): TimelineCategoryStyle {
+  const key = (category || "SIGHT").trim().toUpperCase();
+  switch (key) {
+    case "WAKE":
+      return { icon: "sunny-outline", bg: "#fef3c7", fg: "#92400e" };
+    case "TRANSIT":
+      return { icon: "airplane-outline", bg: "#e0f2fe", fg: "#075985" };
+    case "FOOD":
+      return { icon: "restaurant-outline", bg: "#ede9fe", fg: "#5b21b6" };
+    case "STAY":
+      return { icon: "bed-outline", bg: "#ffedd5", fg: "#9a3412" };
+    case "TOUR":
+      return { icon: "map-outline", bg: "#e0f2fe", fg: "#0c4a6e" };
+    case "NIGHT":
+      return { icon: "camera-outline", bg: "#e2f3fc", fg: "#075782" };
+    default:
+      return { icon: "compass-outline", bg: "#dcfce7", fg: "#166534" };
+  }
+}
+
 export function subscriptionBadgeLabel(tier?: string | null): string | null {
   if (!tier) return null;
   const normalized = tier.trim().toUpperCase();

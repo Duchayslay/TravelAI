@@ -12,6 +12,7 @@ import {
   headerProfileLabel,
   prioritizeSponsoredCatalog,
   subscriptionBadgeLabel,
+  timelineCategoryVisual,
   vipTeaserPrice,
   wcagContrastRatio,
 } from "../src/services/monetization-helpers.ts";
@@ -137,6 +138,14 @@ test("every subscription tier palette and monetization pill meets WCAG AA contra
   assert.ok(wcagContrastRatio(MONETIZATION_ACCENTS.sponsoredText, MONETIZATION_ACCENTS.sponsoredBg) >= 4.5);
   assert.ok(wcagContrastRatio(MONETIZATION_ACCENTS.savingsOnDark, TIER_PALETTES.VIP.heroSubBg) >= 4.5);
   assert.ok(wcagContrastRatio(MONETIZATION_ACCENTS.savingsOnDark, TIER_PALETTES.PLUS.heroSubBg) >= 4.5);
+
+  for (const cat of ["WAKE", "TRANSIT", "FOOD", "STAY", "SIGHT", "TOUR", "NIGHT"]) {
+    const v = timelineCategoryVisual(cat);
+    assert.ok(
+      wcagContrastRatio(v.fg, v.bg) >= 4.5,
+      `Timeline badge ${cat} (${v.fg} on ${v.bg}) must meet WCAG AA contrast`,
+    );
+  }
 });
 
 

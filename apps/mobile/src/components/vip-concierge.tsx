@@ -1,7 +1,8 @@
+import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import * as Speech from "expo-speech";
 import { useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import {
   Card,
   ErrorText,
@@ -16,8 +17,9 @@ import {
   MONETIZATION_ACCENTS,
   TIER_PALETTES,
   getTierPalette,
+  timelineCategoryVisual,
 } from "@/services/monetization-helpers";
-import type { VipItineraryResponse } from "@/services/types";
+import type { VipItineraryDay, VipItineraryResponse, VipTimelineStop } from "@/services/types";
 
 const POPULAR_PROVINCES = [
   "Đà Nẵng",
@@ -34,6 +36,15 @@ const STYLES = [
   { id: "OPTIMAL", label: "⚡ Tối ưu thông minh" },
 ];
 
+function fallbackStopsFromDay(day: VipItineraryDay, province: string): VipTimelineStop[] {
+  if (day.timeline && day.timeline.length > 0) return day.timeline;
+  return [
+    { time: "08:00", category: "SIGHT", title: "Buổi sáng", subtitle: day.morning, placeLabel: province },
+    { time: "14:00", category: "TOUR", title: "Buổi chiều", subtitle: day.afternoon, placeLabel: province },
+    { time: "19:30", category: "NIGHT", title: "Buổi tối", subtitle: day.evening, placeLabel: province },
+  ];
+}
+
 export function VipConcierge({ defaultProvince = "Đà Nẵng" }: { defaultProvince?: string }) {
   const membership = useMembership();
   const palette = getTierPalette(membership.tier);
@@ -42,6 +53,7 @@ export function VipConcierge({ defaultProvince = "Đà Nẵng" }: { defaultProvi
   const [days, setDays] = useState(3);
   const [style, setStyle] = useState("LUXURY");
   const [plan, setPlan] = useState<VipItineraryResponse | null>(null);
+  const [activeDayIndex, setActiveDayIndex] = useState(0);
 
   if (!membership.isPremium) {
     const freeHero = TIER_PALETTES.FREE;
@@ -68,7 +80,7 @@ export function VipConcierge({ defaultProvince = "Đà Nẵng" }: { defaultProvi
             </Text>
           </View>
           <Text style={[styles.ribbonTitle, { color: freeHero.heroTitle }]}>
-            ✨ AI VIP Concierge — Lập Lịch Trình Cá Nhân Hóa & Dự Toán Tiết Kiệm
+            ✨ AI VIP Concierge — Lập Lịch Trình Theo Giờ & Dự Toán Tiết Kiệm
           </Text>
           <Text style={[styles.ribbonSub, { color: freeHero.heroBody }]}>
             Tài khoản Cơ Bản (Free) hiện đang khóa tính năng này. Nâng cấp để mở khóa trọn bộ trợ lý thiết kế chuyến đi hạng sang:
@@ -78,7 +90,7 @@ export function VipConcierge({ defaultProvince = "Đà Nẵng" }: { defaultProvi
         <View style={styles.bodyContent}>
           <View style={styles.perkBox}>
             <Text style={styles.perkItem}>
-              ✦ Tự động thiết kế lịch trình Sáng / Chiều / Tối từ địa danh & dịch vụ thật
+              ✦ Thiết kế timeline chi tiết theo từng khung giờ (07:00, 08:00, 09:15... đến 21:00)
             </Text>
             <Text style={styles.perkItem}>
               ✦ Tính toán trực tiếp ngân sách ưu đãi Hội viên (-5% đến -10%) cho chuyến đi
@@ -100,6 +112,10 @@ export function VipConcierge({ defaultProvince = "Đà Nẵng" }: { defaultProvi
       </View>
     );
   }
+
+  const currentDay = plan?.days[activeDayIndex] || plan?.days[0] || null;
+  const stops = currentDay && plan ? fallbackStopsFromDay(currentDay, plan.province) : [];
+  const accentLineColor = membership.isVip ? "#d97706" : "#087fba";
 
   return (
     <View
@@ -131,7 +147,7 @@ export function VipConcierge({ defaultProvince = "Đà Nẵng" }: { defaultProvi
           ✨ AI VIP Concierge — Thiết Kế Hành Trình Riêng Cho Bạn
         </Text>
         <Text style={[styles.ribbonSub, { color: palette.heroBody }]}>
-          Chọn điểm đến, số ngày và phong cách trải nghiệm để hệ thống lập kế hoạch kèm báo giá đặc quyền {membership.planName}.
+          Chọn điểm đến, số ngày và phong cách trải nghiệm để API lập lịch trình chi tiết từng khung giờ kèm báo giá đặc quyền {membership.planName}.
         </Text>
       </View>
 
@@ -240,6 +256,7 @@ export function VipConcierge({ defaultProvince = "Đà Nẵng" }: { defaultProvi
                 method: "POST",
                 body: { province: province.trim(), days, style },
               });
+              setActiveDayIndex(0);
               setPlan(res);
             })
           }
@@ -251,13 +268,14 @@ export function VipConcierge({ defaultProvince = "Đà Nẵng" }: { defaultProvi
         >
           <Text style={[styles.ctaButtonText, { color: palette.ctaText }]}>
             {action.busy
-              ? "⏳ Đang thiết kế lịch trình đặc quyền..."
+              ? "⏳ Đang gọi API thiết kế lịch trình theo giờ..."
               : `✨ Tạo Lịch Trình ${membership.badge} (${days}N${days - 1}Đ)`}
           </Text>
         </Pressable>
 
         {plan && (
           <View style={styles.resultWrap}>
+            {/* 1. ROYAL BUDGET & VOICE NARRATION CARD */}
             <View
               style={[
                 styles.budgetBox,
@@ -302,15 +320,132 @@ export function VipConcierge({ defaultProvince = "Đà Nẵng" }: { defaultProvi
               </Pressable>
             </View>
 
-            {plan.days.map((d) => (
-              <Card key={d.day}>
-                <Text style={ui.heading}>{d.title}</Text>
-                <Text style={ui.text}>🌅 Sáng: {d.morning}</Text>
-                <Text style={ui.text}>☀️ Chiều: {d.afternoon}</Text>
-                <Text style={ui.text}>🌙 Tối: {d.evening}</Text>
-              </Card>
-            ))}
+            {/* 2. PLANIFICATEUR-STYLE HOURLY TIMELINE BOARD IN TRAVELAI OCEAN/TIER THEME */}
+            <View style={styles.plannerBoard}>
+              <View style={styles.plannerHeaderRow}>
+                <View style={{ flex: 1, gap: 2 }}>
+                  <Text style={styles.plannerHeading}>Kế hoạch hành trình theo giờ</Text>
+                  <Text style={styles.plannerSubheading}>
+                    {plan.province} · {plan.days.length} ngày ·{" "}
+                    {plan.aiSource === "GEMINI_AI" ? "Gemini AI sinh tự động" : "Lịch trình thông minh TravelAI"}
+                  </Text>
+                </View>
+              </View>
 
+              {/* Horizontal Day Tabs (Ngày 1 / Ngày 2 / Ngày 3 + > arrow) */}
+              <View style={styles.dayTabBarWrap}>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.dayTabsRow}
+                >
+                  {plan.days.map((d, idx) => {
+                    const isActive = idx === activeDayIndex;
+                    return (
+                      <Pressable
+                        key={d.day}
+                        accessibilityRole="tab"
+                        accessibilityState={{ selected: isActive }}
+                        onPress={() => setActiveDayIndex(idx)}
+                        style={styles.dayTabItem}
+                      >
+                        <Text
+                          style={[
+                            styles.dayTabTitle,
+                            isActive && { color: "#103c5b", fontWeight: "900" },
+                          ]}
+                        >
+                          Ngày {d.day}
+                        </Text>
+                        {!!d.dateLabel && (
+                          <Text
+                            style={[
+                              styles.dayTabDate,
+                              isActive && { color: "#075985", fontWeight: "700" },
+                            ]}
+                          >
+                            {d.dateLabel}
+                          </Text>
+                        )}
+                        <View
+                          style={[
+                            styles.dayTabIndicator,
+                            isActive && { backgroundColor: accentLineColor },
+                          ]}
+                        />
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+                {plan.days.length > 1 && (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Chuyển sang ngày tiếp theo"
+                    onPress={() => setActiveDayIndex((prev) => (prev + 1) % plan.days.length)}
+                    style={styles.nextDayArrow}
+                  >
+                    <Ionicons name="chevron-forward" size={18} color="#103c5b" />
+                  </Pressable>
+                )}
+              </View>
+
+              {/* Vertical Timeline Rail + Clean White Hourly Cards */}
+              <View style={styles.timelineList}>
+                {stops.map((stop, idx) => {
+                  const visual = timelineCategoryVisual(stop.category);
+                  const isFirst = idx === 0;
+                  const isLast = idx === stops.length - 1;
+                  return (
+                    <View key={`${currentDay?.day}-${idx}-${stop.time}`} style={styles.timelineRow}>
+                      {/* Left Rail */}
+                      <View style={styles.railCol}>
+                        <View
+                          style={[
+                            styles.railLineTop,
+                            idx === 0 && { backgroundColor: "transparent", borderColor: "transparent" },
+                          ]}
+                        />
+                        <View
+                          style={[
+                            styles.railDot,
+                            isFirst
+                              ? { backgroundColor: accentLineColor, borderColor: accentLineColor }
+                              : { backgroundColor: "#f2f8fc", borderColor: "#93c5fd" },
+                          ]}
+                        />
+                        <View
+                          style={[
+                            styles.railLineBottom,
+                            isLast && { backgroundColor: "transparent", borderColor: "transparent" },
+                          ]}
+                        />
+                      </View>
+
+                      {/* Right White Event Card */}
+                      <View style={styles.stopCard}>
+                        <View style={[styles.stopIconCircle, { backgroundColor: visual.bg }]}>
+                          <Ionicons name={visual.icon} size={20} color={visual.fg} />
+                        </View>
+                        <View style={styles.stopMainCol}>
+                          <Text style={styles.stopTitle}>{stop.title}</Text>
+                          <Text style={styles.stopSubtitle}>{stop.subtitle}</Text>
+                        </View>
+                        <View style={styles.stopMetaCol}>
+                          <Text style={styles.stopTime}>{stop.time}</Text>
+                          {!!stop.placeLabel && (
+                            <Text style={styles.stopPlace} numberOfLines={2}>
+                              {stop.placeLabel}
+                            </Text>
+                          )}
+                        </View>
+                      </View>
+                    </View>
+                  );
+                })}
+              </View>
+            </View>
+
+            {/* 3. MATCHED TOURS & HOTELS WITH VIP MEMBER DISCOUNT */}
             {(plan.recommendedTours.length > 0 || plan.recommendedHotels.length > 0) && (
               <Card>
                 <Text style={ui.heading}>Dịch vụ khớp lịch trình với Giá Đặc Quyền</Text>
@@ -437,7 +572,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   ctaButtonText: { fontWeight: "900", fontSize: 15 },
-  resultWrap: { gap: 12, marginTop: 6 },
+  resultWrap: { gap: 14, marginTop: 6 },
   budgetBox: {
     borderRadius: 18,
     borderWidth: 1.5,
@@ -463,6 +598,165 @@ const styles = StyleSheet.create({
     paddingVertical: 11,
   },
   voiceBtnText: { fontSize: 14, fontWeight: "900" },
+  plannerBoard: {
+    backgroundColor: "#f2f8fc",
+    borderColor: "#d6e6f5",
+    borderWidth: 1.5,
+    borderRadius: 24,
+    padding: 20,
+    gap: 16,
+  },
+  plannerHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  plannerHeading: {
+    fontSize: 22,
+    fontWeight: "900",
+    color: "#103c5b",
+    letterSpacing: -0.4,
+  },
+  plannerSubheading: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#475569",
+  },
+  dayTabBarWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderBottomWidth: 1,
+    borderBottomColor: "#dbe8f4",
+  },
+  dayTabsRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 24,
+    paddingRight: 12,
+  },
+  dayTabItem: {
+    paddingBottom: 10,
+    alignItems: "center",
+    minWidth: 68,
+    position: "relative",
+  },
+  dayTabTitle: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#64748b",
+  },
+  dayTabDate: {
+    fontSize: 12,
+    color: "#64748b",
+    marginTop: 2,
+  },
+  dayTabIndicator: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: -1,
+    height: 3,
+    borderRadius: 3,
+    backgroundColor: "transparent",
+  },
+  nextDayArrow: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#dbe8f4",
+    alignItems: "center",
+    justifyContent: "center",
+    marginLeft: 8,
+    marginBottom: 6,
+  },
+  timelineList: {
+    gap: 0,
+  },
+  timelineRow: {
+    flexDirection: "row",
+    alignItems: "stretch",
+    gap: 12,
+  },
+  railCol: {
+    width: 24,
+    alignItems: "center",
+  },
+  railLineTop: {
+    width: 2,
+    height: 22,
+    backgroundColor: "#cbd5e1",
+  },
+  railDot: {
+    width: 13,
+    height: 13,
+    borderRadius: 7,
+    borderWidth: 2.5,
+  },
+  railLineBottom: {
+    width: 2,
+    flex: 1,
+    minHeight: 22,
+    backgroundColor: "#cbd5e1",
+  },
+  stopCard: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    backgroundColor: "#ffffff",
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "#e3eef8",
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    marginBottom: 12,
+    shadowColor: "#294c80",
+    shadowOpacity: 0.05,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 1,
+  },
+  stopIconCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  stopMainCol: {
+    flex: 1,
+    gap: 3,
+  },
+  stopTitle: {
+    fontSize: 15,
+    fontWeight: "800",
+    color: "#103c5b",
+  },
+  stopSubtitle: {
+    fontSize: 13,
+    lineHeight: 19,
+    color: "#475569",
+  },
+  stopMetaCol: {
+    alignItems: "flex-end",
+    justifyContent: "space-between",
+    gap: 6,
+    maxWidth: 135,
+  },
+  stopTime: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#475569",
+  },
+  stopPlace: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#103c5b",
+    textAlign: "right",
+  },
   recRow: {
     flexDirection: "row",
     alignItems: "center",

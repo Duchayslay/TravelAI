@@ -234,15 +234,27 @@ class MonetizationIntegrationTest {
                 .andExpect(jsonPath("$.deals[0].memberPrice").value(475_000))
                 .andExpect(jsonPath("$.deals[0].savedAmount").value(25_000));
 
-        mvc.perform(post("/api/monetization/vip/itinerary")
+        String itineraryBody = mvc.perform(post("/api/monetization/vip/itinerary")
                         .header("Authorization", travelerBearer)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"province\":\"Đà Nẵng\",\"days\":2,\"style\":\"LUXURY\"}"))
+                        .content("{\"province\":\"Đà Nẵng\",\"days\":3,\"style\":\"LUXURY\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.tier").value("PLUS"))
                 .andExpect(jsonPath("$.province").value("Đà Nẵng"))
-                .andExpect(jsonPath("$.days.length()").value(2))
-                .andExpect(jsonPath("$.estimatedSavedVnd").value(25_000));
+                .andExpect(jsonPath("$.days.length()").value(3))
+                .andExpect(jsonPath("$.days[0].timeline[0].time").value("07:00"))
+                .andExpect(jsonPath("$.days[0].timeline[1].time").value("08:00"))
+                .andExpect(jsonPath("$.days[0].dateLabel").isNotEmpty())
+                .andExpect(jsonPath("$.estimatedSavedVnd").value(25_000))
+                .andReturn().getResponse().getContentAsString();
+        JsonNode itineraryJson = json.readTree(itineraryBody);
+        assertTrue(itineraryJson.at("/days/0/timeline").size() >= 6);
+        assertTrue(itineraryJson.at("/days/1/timeline").size() >= 6);
+        // Ensure Day 1 and Day 2 do not repeat identical afternoon/evening blocks
+        org.junit.jupiter.api.Assertions.assertNotEquals(
+                itineraryJson.at("/days/0/afternoon").asText(),
+                itineraryJson.at("/days/1/afternoon").asText()
+        );
     }
 
     @Test

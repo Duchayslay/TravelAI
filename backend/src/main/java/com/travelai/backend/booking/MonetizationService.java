@@ -1,5 +1,7 @@
 package com.travelai.backend.booking;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.travelai.backend.entity.Hotel;
 import com.travelai.backend.entity.Notification;
 import com.travelai.backend.entity.Place;
@@ -12,12 +14,17 @@ import com.travelai.backend.security.SessionService;
 import com.travelai.backend.service.NotificationPublisher;
 import jakarta.persistence.EntityManager;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.math.BigInteger;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.text.Normalizer;
 import java.time.*;
 import java.util.*;
@@ -31,6 +38,9 @@ public class MonetizationService {
 
     public static final int FREE_DAILY_AI_LIMIT = 10;
     private static final Set<String> VALID_PLACEMENTS = Set.of("EXPLORE_DESTINATION", "HOME_FEED", "ALL");
+    private static final Set<String> TIMELINE_CATEGORIES = Set.of(
+            "WAKE", "TRANSIT", "FOOD", "STAY", "SIGHT", "TOUR", "NIGHT"
+    );
 
     private final BookingService bookingService;
     private final EntityManager em;
@@ -40,6 +50,10 @@ public class MonetizationService {
     private final UserRepository users;
     private final NotificationPublisher notifications;
     private final Clock clock;
+    private final ObjectMapper json;
+    private final String geminiKey;
+    private final String geminiModel;
+    private final HttpClient httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(8)).build();
 
     public MonetizationService(
             BookingService bookingService,
@@ -50,7 +64,20 @@ public class MonetizationService {
             NotificationPublisher notifications,
             Clock clock
     ) {
-        this(bookingService, em, tours, hotels, null, users, notifications, clock);
+        this(bookingService, em, tours, hotels, null, users, notifications, clock, new ObjectMapper(), "", "gemini-3.5-flash-lite");
+    }
+
+    public MonetizationService(
+            BookingService bookingService,
+            EntityManager em,
+            TourRepository tours,
+            HotelRepository hotels,
+            PlaceRepository places,
+            UserRepository users,
+            NotificationPublisher notifications,
+            Clock clock
+    ) {
+        this(bookingService, em, tours, hotels, places, users, notifications, clock, new ObjectMapper(), "", "gemini-3.5-flash-lite");
     }
 
     @Autowired
@@ -62,7 +89,10 @@ public class MonetizationService {
             @Autowired(required = false) PlaceRepository places,
             UserRepository users,
             NotificationPublisher notifications,
-            Clock clock
+            Clock clock,
+            ObjectMapper json,
+            @Value("${GEMINI_API_KEY:}") String geminiKey,
+            @Value("${GEMINI_MODEL:gemini-3.5-flash-lite}") String geminiModel
     ) {
         this.bookingService = bookingService;
         this.em = em;
@@ -72,6 +102,9 @@ public class MonetizationService {
         this.users = users;
         this.notifications = notifications;
         this.clock = clock;
+        this.json = json == null ? new ObjectMapper() : json;
+        this.geminiKey = geminiKey == null ? "" : geminiKey.trim();
+        this.geminiModel = (geminiModel == null || geminiModel.isBlank()) ? "gemini-3.5-flash-lite" : geminiModel.trim();
     }
 
     public void ensureSeedCatalog() {
@@ -331,29 +364,17 @@ public class MonetizationService {
             default -> "Nghỉ dưỡng đặc quyền hạng sang (VIP Concierge)";
         };
 
-        List<Map<String, Object>> dayPlans = new ArrayList<>();
-        for (int d = 1; d <= daysCount; d++) {
-            Place spotMorning = matchedPlaces.isEmpty() ? null : matchedPlaces.get((d - 1) % matchedPlaces.size());
-            Place spotAfternoon = matchedPlaces.size() > 1 ? matchedPlaces.get(d % matchedPlaces.size()) : spotMorning;
-            Tour sampleTour = matchedTours.isEmpty() ? null : matchedTours.get((d - 1) % matchedTours.size());
-            Hotel stayHotel = matchedHotels.isEmpty() ? null : matchedHotels.get(0);
-
-            Map<String, Object> day = new LinkedHashMap<>();
-            day.put("day", d);
-            day.put("title", "Ngày " + d + " tại " + province + " · " + styleName);
-            day.put("morning", spotMorning != null
-                    ? "Tham quan & chụp ảnh check-in tại " + spotMorning.getName() + " (khung giờ vàng sáng sớm ít đông khách)."
-                    : "Khởi hành khám phá trung tâm " + province + " và thưởng thức ẩm thực bản địa buổi sáng.");
-            day.put("afternoon", sampleTour != null
-                    ? "Trải nghiệm hành trình tiêu điểm: " + sampleTour.getName() + " (" + Objects.toString(sampleTour.getLocation(), province) + ")."
-                    : (spotAfternoon != null
-                        ? "Khám phá chiều sâu văn hóa tại " + spotAfternoon.getName() + " và điểm ngắm hoàng hôn."
-                        : "Tham quan danh thắng nổi bật tại " + province + " theo lộ trình riêng cho Hội viên."));
-            day.put("evening", stayHotel != null
-                    ? "Nghỉ ngơi tại " + stayHotel.getName() + " (ưu đãi Hội viên -" + sub.discountPercent + "%) và dạo phố đêm " + province + "."
-                    : "Thưởng thức đặc sản địa phương buổi tối và thư giãn tại khu lưu trú trung tâm " + province + ".");
-            dayPlans.add(day);
-        }
+        LocalDate startDay = LocalDate.ofInstant(now, VIETNAM).plusDays(1);
+        List<Map<String, Object>> geminiDays = tryGenerateTimelineWithGemini(
+                province, daysCount, styleName, sub.discountPercent, startDay, matchedPlaces, matchedTours, matchedHotels
+        );
+        String aiSource = geminiDays != null ? "GEMINI_AI" : "SMART_PLANNER";
+        List<Map<String, Object>> dayPlans = geminiDays != null
+                ? geminiDays
+                : buildDetailedCatalogDays(
+                        province, normProv, daysCount, style, styleName, sub.discountPercent, startDay,
+                        matchedPlaces, matchedTours, matchedHotels
+                );
 
         long origEstimate = 0L;
         if (!matchedTours.isEmpty() && matchedTours.get(0).getPrice() != null) {
@@ -381,6 +402,7 @@ public class MonetizationService {
         response.put("province", province);
         response.put("style", style);
         response.put("styleLabel", styleName);
+        response.put("aiSource", aiSource);
         response.put("days", dayPlans);
         response.put("estimatedOriginalVnd", origEstimate);
         response.put("estimatedMemberVnd", memberEstimate);
@@ -397,6 +419,386 @@ public class MonetizationService {
             return Map.<String, Object>of("id", h.getId(), "name", h.getName(), "originalPrice", o, "memberPrice", m, "savedAmount", o - m);
         }).toList());
         return response;
+    }
+
+    private List<Map<String, Object>> tryGenerateTimelineWithGemini(
+            String province,
+            int daysCount,
+            String styleName,
+            int discountPercent,
+            LocalDate startDay,
+            List<Place> matchedPlaces,
+            List<Tour> matchedTours,
+            List<Hotel> matchedHotels
+    ) {
+        if (geminiKey.isEmpty() || !geminiModel.matches("[a-zA-Z0-9._-]{1,80}")) {
+            return null;
+        }
+        try {
+            String placeList = matchedPlaces.isEmpty()
+                    ? "Các danh thắng nổi tiếng tại " + province
+                    : String.join(", ", matchedPlaces.stream().limit(8).map(Place::getName).toList());
+            String tourList = matchedTours.isEmpty()
+                    ? "Chưa có tour cố định"
+                    : String.join(", ", matchedTours.stream().limit(4).map(Tour::getName).toList());
+            String hotelList = matchedHotels.isEmpty()
+                    ? "Khách sạn trung tâm " + province
+                    : String.join(", ", matchedHotels.stream().limit(4).map(Hotel::getName).toList());
+
+            String prompt = "Thiết kế lịch trình du lịch chi tiết theo từng mốc giờ cho " + daysCount + " ngày tại " + province
+                    + " theo phong cách '" + styleName + "' (hội viên được giảm " + discountPercent + "%). "
+                    + "Ưu tiên lồng ghép tự nhiên các địa danh thật trong hệ thống: [" + placeList + "], "
+                    + "tour: [" + tourList + "], lưu trú: [" + hotelList + "]. "
+                    + "Yêu cầu bắt buộc: Mỗi ngày có đúng 7 mốc giờ cụ thể từ sáng tới tối (ví dụ 07:00, 08:00, 09:30, 12:00, 14:00, 16:30, 19:30 hoặc 21:00), "
+                    + "nội dung giữa các ngày KHÔNG ĐƯỢC lặp lại câu chữ của nhau. "
+                    + "Chỉ trả về JSON thuần theo cấu trúc: "
+                    + "{\"days\":[{\"day\":1,\"title\":\"...\",\"timeline\":[{\"time\":\"07:00\",\"category\":\"WAKE|TRANSIT|FOOD|STAY|SIGHT|TOUR|NIGHT\",\"title\":\"...\",\"subtitle\":\"...\",\"placeLabel\":\"...\"}]}]}";
+
+            Map<String, Object> payload = Map.of(
+                    "contents", List.of(Map.of("role", "user", "parts", List.of(Map.of("text", prompt)))),
+                    "generationConfig", Map.of(
+                            "responseMimeType", "application/json",
+                            "maxOutputTokens", 2048
+                    )
+            );
+            HttpRequest req = HttpRequest.newBuilder(URI.create("https://generativelanguage.googleapis.com/v1beta/models/" + geminiModel + ":generateContent"))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("x-goog-api-key", geminiKey)
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(payload)))
+                    .build();
+            HttpResponse<String> res = httpClient.send(req, HttpResponse.BodyHandlers.ofString());
+            if (res.statusCode() < 200 || res.statusCode() >= 300) return null;
+
+            JsonNode parts = json.readTree(res.body()).path("candidates").path(0).path("content").path("parts");
+            StringBuilder raw = new StringBuilder();
+            for (JsonNode part : parts) {
+                if (part.path("text").isTextual()) raw.append(part.path("text").asText());
+            }
+            if (raw.isEmpty()) return null;
+            String cleanJson = raw.toString().trim().replaceAll("^```(?:json)?\\s*", "").replaceAll("\\s*```$", "");
+            JsonNode root = json.readTree(cleanJson);
+            JsonNode daysNode = root.path("days");
+            if (!daysNode.isArray() || daysNode.size() != daysCount) return null;
+
+            List<Map<String, Object>> parsed = new ArrayList<>();
+            for (int i = 0; i < daysCount; i++) {
+                JsonNode dn = daysNode.get(i);
+                JsonNode tlNode = dn.path("timeline");
+                if (!tlNode.isArray() || tlNode.size() < 4) return null;
+                List<Map<String, Object>> stops = new ArrayList<>();
+                for (JsonNode sn : tlNode) {
+                    String time = safeSlice(sn.path("time").asText("08:00"), 12);
+                    String cat = sn.path("category").asText("SIGHT").trim().toUpperCase(Locale.ROOT);
+                    if (!TIMELINE_CATEGORIES.contains(cat)) cat = "SIGHT";
+                    String title = safeSlice(sn.path("title").asText("Hoạt động trải nghiệm"), 90);
+                    String subtitle = safeSlice(sn.path("subtitle").asText(""), 160);
+                    String placeLabel = safeSlice(sn.path("placeLabel").asText(province), 60);
+                    stops.add(timelineStop(time, cat, title, subtitle, placeLabel));
+                }
+                LocalDate date = startDay.plusDays(i);
+                Map<String, Object> dayMap = new LinkedHashMap<>();
+                dayMap.put("day", i + 1);
+                dayMap.put("dateLabel", date.getDayOfMonth() + " thg " + date.getMonthValue());
+                dayMap.put("title", safeSlice(dn.path("title").asText("Ngày " + (i + 1) + " tại " + province + " · " + styleName), 120));
+                dayMap.put("morning", stops.get(0).get("time") + " " + stops.get(0).get("title") + " · " + stops.get(Math.min(2, stops.size() - 1)).get("title"));
+                dayMap.put("afternoon", stops.get(Math.min(4, stops.size() - 1)).get("time") + " " + stops.get(Math.min(4, stops.size() - 1)).get("title"));
+                dayMap.put("evening", stops.get(stops.size() - 1).get("time") + " " + stops.get(stops.size() - 1).get("title"));
+                dayMap.put("timeline", stops);
+                parsed.add(dayMap);
+            }
+            return parsed;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private List<Map<String, Object>> buildDetailedCatalogDays(
+            String province,
+            String normProv,
+            int daysCount,
+            String style,
+            String styleName,
+            int discountPercent,
+            LocalDate startDay,
+            List<Place> matchedPlaces,
+            List<Tour> matchedTours,
+            List<Hotel> matchedHotels
+    ) {
+        String[][] meals = regionalMealsFor(normProv, province);
+        String[] nightSpots = regionalNightActivitiesFor(normProv, province);
+        Hotel primaryHotel = matchedHotels.isEmpty() ? null : matchedHotels.get(0);
+        String hotelName = primaryHotel != null ? primaryHotel.getName() : ("Khách sạn trung tâm " + province);
+
+        List<Map<String, Object>> dayPlans = new ArrayList<>();
+        for (int d = 1; d <= daysCount; d++) {
+            LocalDate currentDate = startDay.plusDays(d - 1);
+            Place morningSpot = matchedPlaces.isEmpty() ? null : matchedPlaces.get(((d - 1) * 2) % matchedPlaces.size());
+            Place afternoonSpot = matchedPlaces.size() > 1
+                    ? matchedPlaces.get(((d - 1) * 2 + 1) % matchedPlaces.size())
+                    : null;
+            Tour dayTour = (d <= matchedTours.size()) ? matchedTours.get(d - 1) : null;
+            String[] dayMeal = meals[(d - 1) % meals.length];
+            String nightAct = nightSpots[(d - 1) % nightSpots.length];
+
+            List<Map<String, Object>> timeline = new ArrayList<>();
+            if (d == 1) {
+                timeline.add(timelineStop(
+                        "07:00", "TRANSIT",
+                        "Khởi hành & Đón bình minh",
+                        "Thức dậy chuẩn bị hành lý và di chuyển đến trung tâm " + province,
+                        province
+                ));
+                timeline.add(timelineStop(
+                        "08:00", "FOOD",
+                        "Điểm tâm sáng đặc sản",
+                        "Thưởng thức " + dayMeal[0] + " nóng hổi khởi đầu chuyến đi",
+                        "Ẩm thực " + province
+                ));
+                timeline.add(timelineStop(
+                        "09:15", "SIGHT",
+                        morningSpot != null ? ("Tham quan " + morningSpot.getName()) : ("Khám phá biểu tượng " + province),
+                        morningSpot != null
+                                ? "Check-in khung giờ ánh sáng đẹp, ít đông khách buổi sáng"
+                                : "Dạo bước quảng trường trung tâm và chụp ảnh lưu niệm",
+                        morningSpot != null ? morningSpot.getName() : ("Trung tâm " + province)
+                ));
+                timeline.add(timelineStop(
+                        "12:00", "FOOD",
+                        "Bữa trưa bản địa",
+                        "Nghỉ chân thưởng thức " + dayMeal[1],
+                        "Nhà hàng địa phương"
+                ));
+                timeline.add(timelineStop(
+                        "14:00", "STAY",
+                        "Nhận phòng nghỉ dưỡng",
+                        "Check-in ưu tiên Hội viên (-" + discountPercent + "%) và nghỉ ngơi thư giãn",
+                        hotelName
+                ));
+                if (dayTour != null) {
+                    timeline.add(timelineStop(
+                            "16:00", "TOUR",
+                            dayTour.getName(),
+                            "Trải nghiệm hành trình điểm nhấn buổi chiều (giá ưu đãi -" + discountPercent + "%)",
+                            Objects.toString(dayTour.getLocation(), province)
+                    ));
+                } else {
+                    timeline.add(timelineStop(
+                            "16:30", "SIGHT",
+                            afternoonSpot != null ? ("Dạo cảnh " + afternoonSpot.getName()) : "Ngắm hoàng hôn chiều tà",
+                            "Tận hưởng không khí mát mẻ cuối chiều và săn góc ảnh hoàng hôn",
+                            afternoonSpot != null ? afternoonSpot.getName() : province
+                    ));
+                }
+                timeline.add(timelineStop(
+                        "19:30", "FOOD",
+                        "Bữa tối chào mừng",
+                        "Thưởng thức " + dayMeal[2] + " trong không gian ấm cúng",
+                        "Khu phố ẩm thực"
+                ));
+                timeline.add(timelineStop(
+                        "21:00", "NIGHT",
+                        "Khám phá nhịp sống đêm",
+                        nightAct,
+                        hotelName
+                ));
+            } else if (d == daysCount) {
+                timeline.add(timelineStop(
+                        "07:00", "WAKE",
+                        "Thức dậy & Hít thở khí trời",
+                        "Đón nắng sớm tại khu lưu trú và thu xếp hành lý gọn gàng",
+                        hotelName
+                ));
+                timeline.add(timelineStop(
+                        "08:00", "FOOD",
+                        "Bữa sáng thảnh thơi & Cà phê",
+                        "Nhâm nhi " + dayMeal[0] + " đúng điệu người bản xứ",
+                        hotelName
+                ));
+                timeline.add(timelineStop(
+                        "09:15", "SIGHT",
+                        morningSpot != null ? ("Ghé thăm " + morningSpot.getName()) : ("Dạo chợ truyền thống " + province),
+                        "Tham quan điểm văn hóa kết thúc hành trình và chọn góc ảnh kỷ niệm",
+                        morningSpot != null ? morningSpot.getName() : ("Chợ trung tâm " + province)
+                ));
+                timeline.add(timelineStop(
+                        "11:30", "STAY",
+                        "Trả phòng & Mua quà đặc sản",
+                        "Hoàn tất thủ tục check-out và chọn mua quà biếu đặc trưng " + province,
+                        hotelName
+                ));
+                timeline.add(timelineStop(
+                        "12:45", "FOOD",
+                        "Bữa trưa tổng kết hành trình",
+                        "Thưởng thức " + dayMeal[1] + " trước giờ khởi hành",
+                        "Trung tâm " + province
+                ));
+                timeline.add(timelineStop(
+                        "15:00", "SIGHT",
+                        afternoonSpot != null ? ("Tản bộ " + afternoonSpot.getName()) : "Thư giãn trà chiều",
+                        "Dừng chân quán cà phê view đẹp, xem lại bộ ảnh chuyến đi",
+                        afternoonSpot != null ? afternoonSpot.getName() : province
+                ));
+                timeline.add(timelineStop(
+                        "17:30", "TRANSIT",
+                        "Khởi hành trở về",
+                        "Kết thúc trọn vẹn chuyến đi đặc quyền tại " + province,
+                        "Sân bay / Ga trung tâm"
+                ));
+            } else {
+                timeline.add(timelineStop(
+                        "07:00", "WAKE",
+                        "Đón bình minh ngày " + d,
+                        "Khởi động nhẹ nhàng và sẵn sàng cho ngày khám phá chuyên sâu",
+                        hotelName
+                ));
+                timeline.add(timelineStop(
+                        "08:00", "FOOD",
+                        "Ăn sáng nạp năng lượng",
+                        "Thưởng thức " + dayMeal[0] + " truyền thống",
+                        "Phố điểm tâm " + province
+                ));
+                if (dayTour != null) {
+                    timeline.add(timelineStop(
+                            "09:00", "TOUR",
+                            dayTour.getName(),
+                            "Khởi hành tour trải nghiệm trọn gói (ưu đãi Hội viên -" + discountPercent + "%)",
+                            Objects.toString(dayTour.getLocation(), province)
+                    ));
+                } else {
+                    timeline.add(timelineStop(
+                            "09:00", "SIGHT",
+                            morningSpot != null ? ("Khám phá " + morningSpot.getName()) : ("Hành trình di sản " + province),
+                            "Tìm hiểu câu chuyện lịch sử, kiến trúc và văn hóa bản địa",
+                            morningSpot != null ? morningSpot.getName() : province
+                    ));
+                }
+                timeline.add(timelineStop(
+                        "12:15", "FOOD",
+                        "Thưởng thức bữa trưa",
+                        "Dùng bữa với thực đơn " + dayMeal[1] + " và nghỉ trưa ngắn",
+                        "Nhà hàng bản địa"
+                ));
+                timeline.add(timelineStop(
+                        "14:30", "SIGHT",
+                        afternoonSpot != null ? ("Trải nghiệm " + afternoonSpot.getName()) : ("Làng nghề & Không gian xanh " + province),
+                        "Tham quan chiều sâu văn hóa và trải nghiệm hoạt động thủ công/sinh thái",
+                        afternoonSpot != null ? afternoonSpot.getName() : province
+                ));
+                timeline.add(timelineStop(
+                        "17:00", "SIGHT",
+                        "Ngắm hoàng hôn & Trà chiều",
+                        "Thư giãn tại điểm hẹn tầm nhìn thoáng đãng theo phong cách " + ("CULTURE".equals(style) ? "di sản" : "nghỉ dưỡng"),
+                        province
+                ));
+                timeline.add(timelineStop(
+                        "19:30", "FOOD",
+                        "Ẩm thực tối đặc sắc",
+                        "Khám phá hương vị " + dayMeal[2],
+                        "Trung tâm " + province
+                ));
+                timeline.add(timelineStop(
+                        "21:00", "NIGHT",
+                        "Trải nghiệm đêm bản địa",
+                        nightAct,
+                        hotelName
+                ));
+            }
+
+            Map<String, Object> day = new LinkedHashMap<>();
+            day.put("day", d);
+            day.put("dateLabel", currentDate.getDayOfMonth() + " thg " + currentDate.getMonthValue());
+            day.put("title", "Ngày " + d + " tại " + province + " · " + styleName);
+            day.put("morning", timeline.get(1).get("time") + " " + timeline.get(1).get("title") + " · " + timeline.get(2).get("time") + " " + timeline.get(2).get("title"));
+            day.put("afternoon", timeline.get(4).get("time") + " " + timeline.get(4).get("title") + " · " + timeline.get(5).get("time") + " " + timeline.get(5).get("title"));
+            day.put("evening", timeline.get(timeline.size() - 1).get("time") + " " + timeline.get(timeline.size() - 1).get("title"));
+            day.put("timeline", timeline);
+            dayPlans.add(day);
+        }
+        return dayPlans;
+    }
+
+    private static Map<String, Object> timelineStop(
+            String time,
+            String category,
+            String title,
+            String subtitle,
+            String placeLabel
+    ) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("time", time);
+        m.put("category", category);
+        m.put("title", title);
+        m.put("subtitle", subtitle);
+        m.put("placeLabel", placeLabel);
+        return m;
+    }
+
+    private static String safeSlice(String text, int maxLen) {
+        if (text == null) return "";
+        String trimmed = text.trim();
+        return trimmed.length() <= maxLen ? trimmed : trimmed.substring(0, maxLen);
+    }
+
+    private static String[][] regionalMealsFor(String normProv, String province) {
+        if (normProv.contains("ha noi")) {
+            return new String[][]{
+                    {"phở bò gia truyền & cà phê trứng phố cổ", "bún chả Hà Thành kèm nem cua bể", "chả cá Lã Vọng & chè sen"},
+                    {"bún thang phố cổ & trà nhài", "bánh cuốn Thanh Trì & chả quế", "lẩu riêu cua bắp bò sườn sụn"},
+                    {"xôi xéo Hàng Bài & cà phê phin", "miến lươn Đông Thịnh & nộm bò khô", "ẩm thực phố đêm Tạ Hiện – Hàng Buồm"}
+            };
+        }
+        if (normProv.contains("da nang") || normProv.contains("quang nam")) {
+            return new String[][]{
+                    {"mì Quảng tôm thịt & cà phê muối", "bánh tráng cuốn thịt heo hai đầu da", "hải sản tươi sống ven biển Mỹ Khê"},
+                    {"bún chả cá Đà Nẵng nóng hổi", "cao lầu & cơm gà phố Hội", "bánh xèo tôm nhảy & nem lụi"},
+                    {"bánh mì chảo & sinh tố nhiệt đới", "gỏi cá Nam Ô & cháo hải sản", "BBQ hải sản ngắm cầu sông Hàn"}
+            };
+        }
+        if (normProv.contains("hue")) {
+            return new String[][]{
+                    {"bún bò Huế chuẩn vị cố đô", "cơm hến Cồn Hến & bánh bèo nậm lọc", "cơm Vua cung đình & chè Huế 36 món"},
+                    {"bánh canh Nam Phổ & cà phê muối Huế", "bánh khoái Thượng Tứ & nem lụi", "ẩm thực ven sông Hương & trà cung đình"},
+                    {"xôi thịt hon & chè hạt sen", "bún thịt nướng Kim Long", "đặc sản cố đô truyền thống"}
+            };
+        }
+        if (normProv.contains("ho chi minh") || normProv.contains("sai gon")) {
+            return new String[][]{
+                    {"cơm tấm sườn bì chả & cà phê sữa đá", "hủ tiếu Nam Vang & gỏi cuốn tôm thịt", "ẩm thực ven sông Sài Gòn"},
+                    {"bánh mì Sài Gòn giòn rụm & bạc xỉu", "lẩu mắm miền Tây & cá kho tộ", "hải sản & món nướng phố đi bộ"},
+                    {"phở miền Nam & sữa đậu nành", "bánh khọt & bún thịt nướng", "nhà hàng fusion hiện đại trung tâm"}
+            };
+        }
+        return new String[][]{
+                {"điểm tâm đặc sản " + province + " & cà phê phin", "thực đơn truyền thống vùng " + province, "đặc sản địa phương theo mùa"},
+                {"bún/phở nóng bản địa & trà sớm", "cơm nhà truyền thống & món đặc trưng " + province, "lẩu & món nướng đặc sản vùng miền"},
+                {"bánh mì/xôi bản xứ & nước ép tươi", "hải sản / nông sản tươi sạch " + province, "ẩm thực chợ đêm địa phương"}
+        };
+    }
+
+    private static String[] regionalNightActivitiesFor(String normProv, String province) {
+        if (normProv.contains("ha noi")) {
+            return new String[]{
+                    "Tản bộ phố đi bộ Hồ Hoàn Kiếm và nghe nhạc acoustic ven hồ",
+                    "Trải nghiệm tour đêm văn hóa hoặc thưởng trà phố cổ tĩnh lặng",
+                    "Ngắm cầu Long Biên lên đèn và dạo chợ đêm Hàng Đào"
+            };
+        }
+        if (normProv.contains("da nang")) {
+            return new String[]{
+                    "Dạo du thuyền sông Hàn và ngắm Cầu Rồng lên đèn rực rỡ",
+                    "Tản bộ biển Mỹ Khê về đêm và ghé chợ đêm Sơn Trà",
+                    "Nghe nhạc sống ven sông Hàn và thưởng thức cocktail tầng cao"
+            };
+        }
+        return new String[]{
+                "Dạo phố đi bộ trung tâm " + province + " và chụp ảnh không gian lên đèn",
+                "Ghé chợ đêm địa phương khám phá quà lưu niệm & nghệ thuật đường phố",
+                "Thư giãn tại lounge khách sạn và tận hưởng không khí đêm yên bình"
+        };
     }
 
     public Map<String, Object> getAiQuota(SessionService.Actor actor) {

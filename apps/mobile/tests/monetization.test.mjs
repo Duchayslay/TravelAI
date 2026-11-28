@@ -9,6 +9,7 @@ import {
   calculateCtrPercent,
   computeMemberPrice,
   getTierPalette,
+  headerProfileLabel,
   prioritizeSponsoredCatalog,
   subscriptionBadgeLabel,
   vipTeaserPrice,
@@ -20,6 +21,13 @@ test("subscriptionBadgeLabel returns badge for PLUS and VIP tiers only", () => {
   assert.equal(subscriptionBadgeLabel(undefined), null);
   assert.equal(subscriptionBadgeLabel("PLUS"), "⭐ Plus");
   assert.equal(subscriptionBadgeLabel("VIP"), "💎 Explorer");
+});
+
+test("headerProfileLabel replaces Hồ sơ with concise tier name when subscribed", () => {
+  assert.equal(headerProfileLabel(false, "VIP", "TravelAI Explorer VIP"), "Đăng nhập");
+  assert.equal(headerProfileLabel(true, "FREE", "Cơ Bản (Free)"), "Hồ sơ");
+  assert.equal(headerProfileLabel(true, "PLUS", "TravelAI Plus"), "TravelAI Plus");
+  assert.equal(headerProfileLabel(true, "VIP", "TravelAI Explorer VIP"), "Explorer VIP");
 });
 
 test("calculateCtrPercent computes safe rounded click-through rate", () => {

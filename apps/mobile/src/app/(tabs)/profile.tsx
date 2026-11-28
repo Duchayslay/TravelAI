@@ -5,8 +5,9 @@ import { useRealtime } from "@/hooks/use-realtime";
 import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
+import { router } from "expo-router";
 import { useState } from "react";
-import { Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import {
   Action,
   Card,
@@ -225,6 +226,22 @@ export default function Profile() {
                 Không giới hạn
               </Text>
             </View>
+          </View>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 2 }}>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => router.push("/subscriptions")}
+              style={{
+                backgroundColor: palette.heroCtaBg,
+                paddingHorizontal: 16,
+                paddingVertical: 10,
+                borderRadius: 12,
+              }}
+            >
+              <Text style={{ color: palette.heroCtaText, fontWeight: "900", fontSize: 13 }}>
+                👑 Quản lý gói · VIP Lounge & Quảng cáo →
+              </Text>
+            </Pressable>
           </View>
         </View>
       ) : (

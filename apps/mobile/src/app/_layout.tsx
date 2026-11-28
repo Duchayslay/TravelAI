@@ -8,7 +8,7 @@ import { primaryTabs } from "@/navigation/tabs";
 import { Ionicons } from "@expo/vector-icons";
 import { DefaultTheme, ThemeProvider, Link, Stack, router, usePathname, useSegments, type Href } from "expo-router";
 import { StatusBar } from "expo-status-bar";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Pressable,
   StyleSheet,
@@ -33,7 +33,7 @@ import { Support } from "@/components/support";
 import { Nav, ui } from "@/components/ui";
 import { useRealtime } from "@/hooks/use-realtime";
 import { useResource } from "@/hooks/use-resource";
-import { TIER_PALETTES } from "@/services/monetization-helpers";
+import { TIER_PALETTES, headerProfileLabel } from "@/services/monetization-helpers";
 import type { Settings } from "@/services/types";
 
 const navigation = primaryTabs.map(tab => ({ title: tab.label, href: tab.route }));
@@ -96,6 +96,8 @@ function NotificationBell() {
 function AppShell() {
   const { user, loading: authLoading } = useAuth();
   const membership = useMembership();
+  const [upgradeHovered, setUpgradeHovered] = useState(false);
+  const [profileHovered, setProfileHovered] = useState(false);
   const insets = useSafeAreaInsets();
   const pathname = usePathname();
   const { width } = useWindowDimensions();
@@ -160,31 +162,28 @@ function AppShell() {
                     </Pressable>
                   </Link>
                 ))}
-                {user && (
+                {user && !membership.isPremium && (
                   <Link href={"/subscriptions" as Href} asChild>
                     <Pressable
+                      accessibilityRole="link"
+                      onHoverIn={() => setUpgradeHovered(true)}
+                      onHoverOut={() => setUpgradeHovered(false)}
+                      onFocus={() => setUpgradeHovered(true)}
+                      onBlur={() => setUpgradeHovered(false)}
                       style={StyleSheet.flatten([
                         styles.navItem,
-                        membership.isVip
-                          ? styles.navVipActive
-                          : membership.isPremium
-                            ? styles.navPlusActive
-                            : styles.navUpgradePill,
+                        pathname === "/subscriptions" && styles.navActive,
+                        upgradeHovered && styles.navVipHover,
                       ])}
                     >
                       <Text
                         style={[
                           styles.navText,
-                          membership.isVip
-                            ? styles.navVipText
-                            : membership.isPremium
-                              ? styles.navPlusText
-                              : styles.navUpgradeText,
+                          pathname === "/subscriptions" && styles.navTextActive,
+                          upgradeHovered && styles.navVipHoverText,
                         ]}
                       >
-                        {membership.isPremium
-                          ? `${membership.badge} (-${membership.discountPercent}%)`
-                          : "✨ Nâng cấp VIP"}
+                        Nâng cấp VIP
                       </Text>
                     </Pressable>
                   </Link>
@@ -226,39 +225,55 @@ function AppShell() {
               <Link href={user ? "/profile" : "/login"} asChild>
                 <Pressable
                   accessibilityRole="link"
-                  accessibilityLabel={user ? "Hồ sơ" : "Đăng nhập"}
+                  accessibilityLabel={
+                    user
+                      ? headerProfileLabel(true, membership.tier, membership.planName)
+                      : "Đăng nhập"
+                  }
+                  onHoverIn={() => setProfileHovered(true)}
+                  onHoverOut={() => setProfileHovered(false)}
+                  onFocus={() => setProfileHovered(true)}
+                  onBlur={() => setProfileHovered(false)}
                   style={StyleSheet.flatten([
                     styles.profileButton,
-                    membership.isPremium &&
+                    profileHovered &&
+                      membership.isPremium &&
                       (membership.isVip ? styles.profileButtonVip : styles.profileButtonPlus),
                   ])}
                 >
                   {user?.avatar ? (
-                      <Image
+                    <Image
                       key={user.avatar}
                       source={{ uri: user.avatar }}
                       contentFit="cover"
                       style={[
                         { width: 28, height: 28, borderRadius: 14 },
-                        membership.isPremium && {
-                          borderWidth: 2,
-                          borderColor: membership.isVip
-                            ? TIER_PALETTES.VIP.heroBorder
-                            : TIER_PALETTES.PLUS.heroBorder,
-                        },
+                        profileHovered &&
+                          membership.isPremium && {
+                            borderWidth: 2,
+                            borderColor: membership.isVip
+                              ? TIER_PALETTES.VIP.heroBorder
+                              : TIER_PALETTES.PLUS.heroBorder,
+                          },
                       ]}
                       accessibilityLabel="Ảnh đại diện của bạn"
                     />
                   ) : (
                     <Ionicons
-                      name={membership.isPremium ? "diamond" : "person-outline"}
-                      size={19}
-                      color={
+                      name={
                         membership.isVip
-                          ? TIER_PALETTES.VIP.badgeText
+                          ? "diamond-outline"
                           : membership.isPremium
-                            ? TIER_PALETTES.PLUS.heroEyebrow
-                            : "#087fba"
+                            ? "star-outline"
+                            : "person-outline"
+                      }
+                      size={18}
+                      color={
+                        profileHovered && membership.isPremium
+                          ? membership.isVip
+                            ? TIER_PALETTES.VIP.badgeText
+                            : TIER_PALETTES.PLUS.heroTitle
+                          : "#075782"
                       }
                     />
                   )}
@@ -266,15 +281,12 @@ function AppShell() {
                     <Text
                       style={[
                         styles.profileText,
-                        membership.isPremium &&
+                        profileHovered &&
+                          membership.isPremium &&
                           (membership.isVip ? styles.profileTextVip : styles.profileTextPlus),
                       ]}
                     >
-                      {user
-                        ? membership.isPremium
-                          ? `${membership.badge} · ${user.name || "Hồ sơ"}`
-                          : "Hồ sơ"
-                        : "Đăng nhập"}
+                      {headerProfileLabel(Boolean(user), membership.tier, membership.planName)}
                     </Text>
                   )}
                 </Pressable>
@@ -368,24 +380,10 @@ const styles = StyleSheet.create({
   navActive: { backgroundColor: "#e2f3fc" },
   navText: { fontSize: 14, fontWeight: "600", color: "#65718a" },
   navTextActive: { color: "#087fba" },
-  navUpgradePill: {
-    backgroundColor: TIER_PALETTES.FREE.ctaSecondaryBg,
-    borderWidth: 1.5,
-    borderColor: TIER_PALETTES.FREE.ctaSecondaryBorder,
-  },
-  navUpgradeText: { color: TIER_PALETTES.FREE.ctaSecondaryText, fontWeight: "800" },
-  navPlusActive: {
-    backgroundColor: TIER_PALETTES.PLUS.heroBg,
-    borderWidth: 1.5,
-    borderColor: TIER_PALETTES.PLUS.heroBorder,
-  },
-  navPlusText: { color: TIER_PALETTES.PLUS.heroTitle, fontWeight: "900" },
-  navVipActive: {
+  navVipHover: {
     backgroundColor: TIER_PALETTES.VIP.heroBg,
-    borderWidth: 1.5,
-    borderColor: TIER_PALETTES.VIP.heroBorder,
   },
-  navVipText: { color: TIER_PALETTES.VIP.badgeText, fontWeight: "900" },
+  navVipHoverText: { color: TIER_PALETTES.VIP.badgeText, fontWeight: "800" },
   headerActions: { flexDirection: "row", alignItems: "center", gap: 5 },
   iconButton: {
     width: 43,

@@ -173,6 +173,19 @@ export function subscriptionBadgeLabel(tier?: string | null): string | null {
   return null;
 }
 
+export function headerProfileLabel(
+  isLoggedIn: boolean,
+  tier?: string | null,
+  planName?: string | null,
+): string {
+  if (!isLoggedIn) return "Đăng nhập";
+  const normalized = (tier || "FREE").trim().toUpperCase();
+  if (normalized === "VIP") return "Explorer VIP";
+  if (normalized === "PLUS") return "TravelAI Plus";
+  if (planName && normalized !== "FREE") return planName;
+  return "Hồ sơ";
+}
+
 export function calculateCtrPercent(impressions: number, clicks: number): number {
   if (!Number.isFinite(impressions) || impressions <= 0 || !Number.isFinite(clicks) || clicks <= 0) {
     return 0;

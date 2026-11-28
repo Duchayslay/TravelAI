@@ -255,13 +255,9 @@ export interface UserSubscriptionRecord {
   expiresAt?: string | null;
   createdAt?: string | null;
 }
-export interface SponsoredCampaign {
+export interface PublicSponsoredCampaign {
   id: string;
-  ownerId: number;
-  ownerName?: string;
-  ownerEmail?: string;
   packageCode: string;
-  packageName: string;
   placement: string;
   targetKind: "TOUR" | "HOTEL";
   targetId: number;
@@ -273,6 +269,12 @@ export interface SponsoredCampaign {
   targetImage?: string | null;
   headline: string;
   sponsoredLabel: string;
+}
+export interface SponsoredCampaign extends PublicSponsoredCampaign {
+  ownerId: number;
+  ownerName?: string;
+  ownerEmail?: string;
+  packageName: string;
   durationDays: number;
   status: string;
   paidAmount: number;

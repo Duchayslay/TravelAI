@@ -5,7 +5,7 @@ import { Card, money, ui } from "@/components/ui";
 import { useResource } from "@/hooks/use-resource";
 import { api } from "@/services/api";
 import { MONETIZATION_ACCENTS } from "@/services/monetization-helpers";
-import type { SponsoredCampaign } from "@/services/types";
+import type { PublicSponsoredCampaign } from "@/services/types";
 
 export function SponsoredStrip({
   placement,
@@ -19,7 +19,7 @@ export function SponsoredStrip({
   const query = `/monetization/sponsored?placement=${encodeURIComponent(placement)}${
     province ? `&province=${encodeURIComponent(province)}` : ""
   }`;
-  const sponsored = useResource<SponsoredCampaign[]>(query, 0, true);
+  const sponsored = useResource<PublicSponsoredCampaign[]>(query, 0, true);
   const seen = useRef<Set<string>>(new Set());
 
   useEffect(() => {

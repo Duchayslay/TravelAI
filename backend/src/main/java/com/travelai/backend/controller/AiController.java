@@ -51,8 +51,11 @@ public class AiController {
             contents.add(Map.of("role", turn.role(), "parts", List.of(Map.of("text", turn.text()))));
         }
         if (!"user".equals(input.messages().getLast().role())) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Thiếu câu hỏi.");
+        validateProviderReady();
+        if (monetization != null) monetization.assertAiQuotaAvailable(actor);
+        Map<String, String> answer = generate(userId, contents);
         if (monetization != null) monetization.consumeAiQuota(actor);
-        return generate(userId, contents);
+        return answer;
     }
     public record VoiceInput(String audio) {}
     @PostMapping("/voice")
@@ -61,8 +64,11 @@ public class AiController {
         long userId = actor.id();
         VoiceFormat.Audio audio=VoiceFormat.parse(input == null ? null : input.audio());
         List<Map<String,Object>> contents=voiceContents(audio);
+        validateProviderReady();
+        if (monetization != null) monetization.assertAiQuotaAvailable(actor);
+        Map<String, String> answer = generate(userId, contents);
         if (monetization != null) monetization.consumeAiQuota(actor);
-        return generate(userId, contents);
+        return answer;
     }
     /** Audio first, then the instruction: Gemini answers the spoken question directly this way. */
     public static List<Map<String,Object>> voiceContents(VoiceFormat.Audio audio) {
@@ -70,9 +76,12 @@ public class AiController {
             Map.of("inlineData",Map.of("mimeType",audio.mime(),"data",audio.base64())),
             Map.of("text","Người dùng gửi một câu hỏi bằng giọng nói (tệp âm thanh đính kèm). Hãy nghe và trả lời trực tiếp bằng tiếng Việt, ngắn gọn. Chỉ khi thật sự không nghe được nội dung mới nói rõ điều đó."))));
     }
-    private Map<String,String> generate(long userId,List<Map<String,Object>> contents) {
+    private void validateProviderReady() {
         if (key.isEmpty()) throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Chat AI chưa được cấu hình khóa Gemini trên máy chủ.");
         if (!model.matches("[a-zA-Z0-9._-]{1,80}")) throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Cấu hình mô hình Gemini không hợp lệ.");
+    }
+    private Map<String,String> generate(long userId,List<Map<String,Object>> contents) {
+        validateProviderReady();
         long now = System.currentTimeMillis();
         Long before = lastRequest.put(userId, now);
         if (before != null && now - before < 2000) throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "Vui lòng chờ trước khi gửi tiếp.");

@@ -13,9 +13,16 @@ import static com.travelai.backend.booking.BookingContracts.*;
 public class MonetizationController {
 
     private final MonetizationService service;
+    private final VipItineraryPlannerService planner;
 
     public MonetizationController(MonetizationService service) {
+        this(service, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public MonetizationController(MonetizationService service, VipItineraryPlannerService planner) {
         this.service = service;
+        this.planner = planner;
     }
 
     @GetMapping("/api/monetization/catalog")
@@ -89,7 +96,7 @@ public class MonetizationController {
             HttpServletRequest request,
             @RequestBody VipItineraryInput input
     ) {
-        return service.generateVipItinerary(ApiSecurity.actor(request), input);
+        return planner.generateVipItinerary(ApiSecurity.actor(request), input);
     }
 
     @GetMapping("/api/admin/monetization/overview")

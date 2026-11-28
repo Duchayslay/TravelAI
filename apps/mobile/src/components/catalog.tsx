@@ -25,13 +25,13 @@ import {
   vipTeaserPrice,
 } from "@/services/monetization-helpers";
 import { provinceFor, provinces } from "@/services/provinces";
-import type { CatalogItem, Place, SponsoredCampaign } from "@/services/types";
+import type { CatalogItem, Place, PublicSponsoredCampaign } from "@/services/types";
 
 export function Catalog({ kind }: { kind: "tours" | "hotels" }) {
   const membership = useMembership();
   const palette = getTierPalette(membership.tier);
   const resource = useResource<CatalogItem[]>(`/${kind}`);
-  const sponsored = useResource<SponsoredCampaign[]>("/monetization/sponsored?placement=EXPLORE");
+  const sponsored = useResource<PublicSponsoredCampaign[]>("/monetization/sponsored?placement=EXPLORE");
   const places = useResource<Place[]>(kind === "tours" ? "/places" : null);
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(true);

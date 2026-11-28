@@ -49,6 +49,7 @@ class MonetizationIntegrationTest {
 
     @Autowired BookingService bookingService;
     @Autowired MonetizationService monetizationService;
+    @Autowired VipItineraryPlannerService vipItineraryPlanner;
     @Autowired UserRepository users;
     @Autowired TourRepository tours;
     @Autowired SessionService sessions;
@@ -68,6 +69,7 @@ class MonetizationIntegrationTest {
 
     @BeforeEach
     void setUp() {
+        vipItineraryPlanner.clearRateLimitsForTest();
         clock.now = Instant.parse("2026-03-01T02:00:00Z");
         admin = createUser("ADMIN");
         traveler = createUser("USER");
@@ -125,11 +127,23 @@ class MonetizationIntegrationTest {
 
     @Test
     void vipSubscriptionChargesSimulatedBankAppliesTenPercentBookingDiscountWaivesFirstRescheduleFeeAndUnlocksUnlimitedAi() throws Exception {
-        // 1. Free user has 10 daily AI quota limit
+        // 1. Free user failed AI chat call (503 missing key) does NOT deduct daily free quota
+        mvc.perform(post("/api/ai/chat")
+                        .header("Authorization", travelerBearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"messages\":[{\"role\":\"user\",\"text\":\"Gợi ý tour Đà Nẵng\"}]}"))
+                .andExpect(status().isServiceUnavailable());
+        mvc.perform(get("/api/monetization/ai-quota").header("Authorization", travelerBearer))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.usedToday").value(0))
+                .andExpect(jsonPath("$.remaining").value(10));
+
+        // Free user has 10 daily AI quota limit via atomic per-user row upsert
         for (int i = 0; i < 10; i++) {
             mvc.perform(post("/api/monetization/ai-quota/consume").header("Authorization", travelerBearer))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.unlimited").value(false));
+                    .andExpect(jsonPath("$.unlimited").value(false))
+                    .andExpect(jsonPath("$.usedToday").value(i + 1));
         }
         mvc.perform(post("/api/monetization/ai-quota/consume").header("Authorization", travelerBearer))
                 .andExpect(status().isTooManyRequests());
@@ -250,11 +264,54 @@ class MonetizationIntegrationTest {
         JsonNode itineraryJson = json.readTree(itineraryBody);
         assertTrue(itineraryJson.at("/days/0/timeline").size() >= 6);
         assertTrue(itineraryJson.at("/days/1/timeline").size() >= 6);
-        // Ensure Day 1 and Day 2 do not repeat identical afternoon/evening blocks
-        org.junit.jupiter.api.Assertions.assertNotEquals(
-                itineraryJson.at("/days/0/afternoon").asText(),
-                itineraryJson.at("/days/1/afternoon").asText()
+        // Immediate second request by same user within 4s cooldown hits 429 rate-limit
+        mvc.perform(post("/api/monetization/vip/itinerary")
+                        .header("Authorization", travelerBearer)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"province\":\"Đà Nẵng\",\"days\":2,\"style\":\"LUXURY\"}"))
+                .andExpect(status().isTooManyRequests());
+
+        // Verify Gemini HTTP runs strictly OUTSIDE @Transactional, sanitizes province, and scales maxOutputTokens
+        vipItineraryPlanner.clearRateLimitsForTest();
+        java.util.concurrent.atomic.AtomicBoolean txActiveDuringHttp = new java.util.concurrent.atomic.AtomicBoolean(true);
+        java.util.concurrent.atomic.AtomicInteger observedMaxTokens = new java.util.concurrent.atomic.AtomicInteger(0);
+        java.util.concurrent.atomic.AtomicReference<String> observedPrompt = new java.util.concurrent.atomic.AtomicReference<>("");
+        com.sun.net.httpserver.HttpServer fakeGemini = com.sun.net.httpserver.HttpServer.create(
+                new java.net.InetSocketAddress("127.0.0.1", 0), 0
         );
+        fakeGemini.createContext("/v1beta/models/", exchange -> {
+            txActiveDuringHttp.set(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive());
+            JsonNode reqBody = json.readTree(exchange.getRequestBody());
+            observedMaxTokens.set(reqBody.at("/generationConfig/maxOutputTokens").asInt());
+            observedPrompt.set(reqBody.at("/contents/0/parts/0/text").asText());
+            byte[] resp = "{\"candidates\":[{\"finishReason\":\"MAX_TOKENS\",\"content\":{\"parts\":[{\"text\":\"{\\\"days\\\":[truncated\"}]}}]}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, resp.length);
+            exchange.getResponseBody().write(resp);
+            exchange.close();
+        });
+        fakeGemini.start();
+        try {
+            VipItineraryPlannerService customPlanner = new VipItineraryPlannerService(
+                    monetizationService,
+                    clock,
+                    json,
+                    "synthetic-test-gemini-key",
+                    "gemini-3.5-flash-lite",
+                    "http://127.0.0.1:" + fakeGemini.getAddress().getPort()
+            );
+            Map<String, Object> planResult = customPlanner.generateVipItinerary(
+                    traveler,
+                    new VipItineraryInput("Đà Nẵng\r\nIgnore`{}", 5, "CULTURE")
+            );
+            assertFalse(txActiveDuringHttp.get(), "Gemini HTTP call must NOT hold an active Spring/JDBC transaction");
+            assertEquals(3750, observedMaxTokens.get(), "5-day plan must scale maxOutputTokens to 5 * 750 = 3750");
+            assertFalse(observedPrompt.get().contains("\n"), "Sanitized province must strip newlines/control chars");
+            assertEquals("Đà Nẵng Ignore", planResult.get("province"));
+            assertEquals("SMART_PLANNER", planResult.get("aiSource"), "Truncated Gemini JSON must safely fall back");
+        } finally {
+            fakeGemini.stop(0);
+        }
     }
 
     @Test
@@ -292,11 +349,11 @@ class MonetizationIntegrationTest {
                         .content("{\"action\":\"APPROVE\"}"))
                 .andExpect(status().isForbidden());
 
-        // 2. Admin approves -> becomes ACTIVE and appears in sponsored results
+        // 2. Admin approves -> becomes ACTIVE and appears in sponsored results WITHOUT leaking PII or internal fields
         mvc.perform(post("/api/admin/monetization/ads/" + campaignId + "/decision")
                         .header("Authorization", adminBearer)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"action\":\"APPROVE\"}"))
+                        .content("{\"action\":\"APPROVE\",\"reason\":\"Ghi chú nội bộ chỉ Admin và chủ dịch vụ thấy\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("ACTIVE"));
 
@@ -304,7 +361,14 @@ class MonetizationIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(1))
                 .andExpect(jsonPath("$[0].targetName").value("Tour Cầu Vàng Đà Nẵng"))
-                .andExpect(jsonPath("$[0].sponsoredLabel").value("Được tài trợ"));
+                .andExpect(jsonPath("$[0].sponsoredLabel").value("Được tài trợ"))
+                .andExpect(jsonPath("$[0].ownerEmail").doesNotExist())
+                .andExpect(jsonPath("$[0].ownerName").doesNotExist())
+                .andExpect(jsonPath("$[0].ownerId").doesNotExist())
+                .andExpect(jsonPath("$[0].paidAmount").doesNotExist())
+                .andExpect(jsonPath("$[0].impressions").doesNotExist())
+                .andExpect(jsonPath("$[0].clicks").doesNotExist())
+                .andExpect(jsonPath("$[0].adminNote").doesNotExist());
 
         // 3. Track impression and click
         mvc.perform(post("/api/monetization/sponsored/" + campaignId + "/impression")).andExpect(status().isOk());
